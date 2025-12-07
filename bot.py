@@ -1,116 +1,108 @@
 import os
-import logging
 import asyncio
-import yt_dlp
-import aiohttp
-
-from telegram.ext import (
-    Application,
-    MessageHandler,
-    filters,
-)
+import base64
+import logging
+from fastapi import FastAPI
 from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from yt_dlp import YoutubeDL
 
-# ---------------------------------------
-# Logging
-# ---------------------------------------
 logging.basicConfig(
-    level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-# ---------------------------------------
-# Long Timeout Session (fixes upload errors)
-# ---------------------------------------
-session = aiohttp.ClientSession(
-    timeout=aiohttp.ClientTimeout(
-        total=600,
-        connect=600,
-        sock_connect=600,
-        sock_read=600
-    )
+    level=logging.INFO
 )
 
-# ---------------------------------------
-# Download 720p with FFmpeg & Cookies
-# ---------------------------------------
-def download_720p(url):
-    output_file = "video_720p.mp4"
+# ---------------------------
+# FASTAPI HEARTBEAT SERVER
+# ---------------------------
+app = FastAPI()
 
-    ydl_opts = {
-        "cookiefile": "cookies.txt",   # You solved cookies already
-        "format": "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best",
-        "merge_output_format": "mp4",
+@app.get("/")
+def home():
+    return {"status": "Bot running"}
 
-        "postprocessors": [
-            {
-                "key": "FFmpegVideoConvertor",
-                "preferedformat": "mp4"
-            }
-        ],
 
-        "outtmpl": output_file,
-    }
+# ---------------------------
+# COOKIE HANDLING
+# ---------------------------
+cookies_path = "cookies.txt"
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+if os.getenv("COOKIES_BASE64"):
+    with open(cookies_path, "wb") as f:
+        f.write(base64.b64decode(os.getenv("COOKIES_BASE64")))
+    logging.info("Cookies loaded from environment.")
+else:
+    logging.info("No cookies provided. Public videos only.")
 
-    return output_file
 
-# ---------------------------------------
-# Handle incoming messages
-# ---------------------------------------
-async def handle_message(update: Update, context):
+# ---------------------------
+# DOWNLOAD FUNCTION
+# ---------------------------
+async def download_video(url: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⬇ Download started...\nPlease wait 10–20 seconds.")
 
-    text = update.message.text.strip()
+    def run_yt():
+        ydl_opts = {
+            "format": "bestvideo[height<=720]+bestaudio/best",
+            "outtmpl": "video.mp4",
+            "merge_output_format": "mp4",
+            "cookies": cookies_path if os.path.exists(cookies_path) else None,
+            "ffmpeg_location": "/usr/bin/ffmpeg",
+            "retries": 10,
+            "fragment_retries": 10,
+            "concurrent_fragment_downloads": 5,
+        }
+        with YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
 
-    if "youtu" not in text:
-        await update.message.reply_text("❌ Please send a valid YouTube link.")
+    # Run download in background thread to prevent timeout
+    try:
+        await asyncio.wait_for(asyncio.to_thread(run_yt), timeout=120)
+    except asyncio.TimeoutError:
+        await update.message.reply_text("❌ Timeout occurred. Try again.")
+        return
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
         return
 
-    status_msg = await update.message.reply_text("⬇️ Downloading video in 720p...")
-
+    # Send file
     try:
-        filepath = download_720p(text)
-
-        await status_msg.edit_text("📤 Uploading video to Telegram (may take time)...")
-
-        # LARGE TIMEOUT FIX
-        with open(filepath, "rb") as f:
-            await context.bot.send_video(
-                chat_id=update.effective_chat.id,
-                video=f,
-                supports_streaming=True,
-                read_timeout=600,
-                write_timeout=600,
-                connect_timeout=600,
-                timeout=600
-            )
-
-        await status_msg.edit_text("✅ Done!")
-
-        os.remove(filepath)
-
+        await update.message.reply_video(
+            video=open("video.mp4", "rb"),
+            caption="Here is your 720p video 😊"
+        )
     except Exception as e:
-        logger.error(f"Download/Upload failed: {e}")
-        await status_msg.edit_text("❌ Failed. Try another link.")
+        await update.message.reply_text(f"❌ Telegram send error: {e}")
 
-# ---------------------------------------
-# Main Entry
-# ---------------------------------------
-async def main():
-    app = Application.builder().token(BOT_TOKEN).client_session(session).build()
-
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    await app.initialize()
-    await app.start()
-    logger.info("Bot started successfully.")
-    await asyncio.Event().wait()   # prevent exit
+    # Cleanup
+    if os.path.exists("video.mp4"):
+        os.remove("video.mp4")
 
 
+# ---------------------------
+# Telegram Bot Handlers
+# ---------------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Send me a YouTube link and I'll download it in 720p!")
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = update.message.text.strip()
+    if "youtube.com" in url or "youtu.be" in url:
+        await download_video(url, update, context)
+    else:
+        await update.message.reply_text("❌ Not a valid YouTube link.")
+
+
+# ---------------------------
+# MAIN APPLICATION
+# ---------------------------
 if __name__ == "__main__":
-    asyncio.run(main())
+    TOKEN = os.getenv("BOT_TOKEN")
+
+    application = ApplicationBuilder().token(TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    application.run_polling()
