@@ -1,9 +1,4 @@
-python-telegram-bot==13.15
+python-telegram-bot==20.6
 yt-dlp
 fastapi==0.109.2
 uvicorn==0.30.1
-python-telegram-bot==20.6
-yt-dlp
-aiohttp
-fastapi
-uvicorn
