@@ -1,11 +1,15 @@
 services:
-  - type: worker
+  - type: web
     name: telegram-ytdl-bot
     env: docker
     plan: free
     dockerfilePath: Dockerfile
-    # optionally pin region: 
-    # region: iad
-    # Ensure the repo is the current repo; Render will build from your repo.
-    # You can set env vars in Render dashboard. See README for required vars.
     autoDeploy: true
+
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_MAX_BYTES
+        value: "1900000000"
+      - key: CHAT_WHITELIST
+        value: ""
