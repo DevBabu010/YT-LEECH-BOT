@@ -31,12 +31,18 @@ def download_720p(url):
         "format": "bestvideo[height<=720]+bestaudio/best",
         "merge_output_format": "mp4",
         "outtmpl": output_file,
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android"]
+            }
+        }
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
     return output_file
+
 
 
 # ------------------- TELEGRAM MESSAGE HANDLER ------------------- #
