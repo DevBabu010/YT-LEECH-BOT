@@ -28,35 +28,25 @@ def download_720p(url):
     output_file = "video_720p.mp4"
 
     ydl_opts = {
+        "cookiefile": "cookies.txt",    # <-- IMPORTANT
+
         "format": "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[height<=720]",
         "merge_output_format": "mp4",
         "outtmpl": output_file,
 
-        # Force player client to avoid age-check cookie requirements
-        "extractor_args": {
-            "youtube": {
-                "player_client": ["android", "web_safari", "ios"],
-                "skip": ["dash"]
-            }
-        },
-
-        # Pretend to be normal browser (YouTube anti-bot bypass)
         "http_headers": {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
                           "Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://www.youtube.com/",
-        },
-
-        # Disable JS dependency completely
-        "compat_opts": ["no-youtube-unavailable-videos", "no-javascript"],
+        }
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
 
     return output_file
+
 
 
 
