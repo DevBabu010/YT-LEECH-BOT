@@ -1,45 +1,58 @@
 import os
 import logging
-from fastapi import FastAPI
-import uvicorn
-from threading import Thread
-from telegram.ext import Updater, MessageHandler, Filters
+import asyncio
 import yt_dlp
+import aiohttp
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+from telegram.ext import (
+    Application,
+    MessageHandler,
+    filters,
+)
+from telegram import Update
 
+# ---------------------------------------
 # Logging
+# ---------------------------------------
 logging.basicConfig(
+    level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# FastAPI app to keep Render alive
-app = FastAPI()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-@app.get("/")
-def home():
-    return {"status": "Bot is running on Render"}
+# ---------------------------------------
+# Long Timeout Session (fixes upload errors)
+# ---------------------------------------
+session = aiohttp.ClientSession(
+    timeout=aiohttp.ClientTimeout(
+        total=600,
+        connect=600,
+        sock_connect=600,
+        sock_read=600
+    )
+)
 
-# ------------------- DOWNLOAD FUNCTION ------------------- #
-
+# ---------------------------------------
+# Download 720p with FFmpeg & Cookies
+# ---------------------------------------
 def download_720p(url):
     output_file = "video_720p.mp4"
 
     ydl_opts = {
-        "cookiefile": "cookies.txt",    # <-- IMPORTANT
-
-        "format": "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best[height<=720]",
+        "cookiefile": "cookies.txt",   # You solved cookies already
+        "format": "bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/best",
         "merge_output_format": "mp4",
-        "outtmpl": output_file,
 
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/120.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-        }
+        "postprocessors": [
+            {
+                "key": "FFmpegVideoConvertor",
+                "preferedformat": "mp4"
+            }
+        ],
+
+        "outtmpl": output_file,
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -47,54 +60,57 @@ def download_720p(url):
 
     return output_file
 
+# ---------------------------------------
+# Handle incoming messages
+# ---------------------------------------
+async def handle_message(update: Update, context):
 
+    text = update.message.text.strip()
 
-
-
-# ------------------- TELEGRAM MESSAGE HANDLER ------------------- #
-
-def handle_message(update, context):
-    url = update.message.text.strip()
-
-    if "youtube" not in url and "youtu.be" not in url:
-        update.message.reply_text("❌ Send a valid YouTube URL please.")
+    if "youtu" not in text:
+        await update.message.reply_text("❌ Please send a valid YouTube link.")
         return
 
-    processing = update.message.reply_text("📥 Downloading 720p video...")
+    status_msg = await update.message.reply_text("⬇️ Downloading video in 720p...")
 
     try:
-        file_path = download_720p(url)
+        filepath = download_720p(text)
 
-        update.message.reply_video(
-            video=open(file_path, "rb"),
-            caption="✅ Here's your 720p video!"
-        )
+        await status_msg.edit_text("📤 Uploading video to Telegram (may take time)...")
 
-        os.remove(file_path)
-        processing.edit_text("✔ Completed!")
+        # LARGE TIMEOUT FIX
+        with open(filepath, "rb") as f:
+            await context.bot.send_video(
+                chat_id=update.effective_chat.id,
+                video=f,
+                supports_streaming=True,
+                read_timeout=600,
+                write_timeout=600,
+                connect_timeout=600,
+                timeout=600
+            )
+
+        await status_msg.edit_text("✅ Done!")
+
+        os.remove(filepath)
 
     except Exception as e:
-        logger.error(e)
-        processing.edit_text("❌ Failed to download. Try another link.")
+        logger.error(f"Download/Upload failed: {e}")
+        await status_msg.edit_text("❌ Failed. Try another link.")
 
+# ---------------------------------------
+# Main Entry
+# ---------------------------------------
+async def main():
+    app = Application.builder().token(BOT_TOKEN).client_session(session).build()
 
-# ------------------- RUN TELEGRAM BOT ------------------- #
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-def run_bot():
-    updater = Updater(BOT_TOKEN, use_context=True)
-    dp = updater.dispatcher
+    await app.initialize()
+    await app.start()
+    logger.info("Bot started successfully.")
+    await asyncio.Event().wait()   # prevent exit
 
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-
-    updater.start_polling()   # <-- OK IN THREAD
-    # DO NOT CALL idle() !!!  # <-- THIS FIXES YOUR ERROR
-
-
-# ------------------- MAIN ENTRY ------------------- #
 
 if __name__ == "__main__":
-    # Start Telegram bot in background
-    Thread(target=run_bot, daemon=True).start()
-
-    # Start FastAPI for Render
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    asyncio.run(main())
