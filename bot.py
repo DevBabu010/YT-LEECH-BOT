@@ -1,10 +1,15 @@
 import os
 import asyncio
-import base64
 import logging
 from fastapi import FastAPI
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
 from yt_dlp import YoutubeDL
 
 logging.basicConfig(
@@ -12,90 +17,86 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# ---------------------------
-# FASTAPI HEARTBEAT SERVER
-# ---------------------------
 app = FastAPI()
 
 @app.get("/")
 def home():
-    return {"status": "Bot running"}
+    return {"status": "Bot is running"}
 
-
-# ---------------------------
-# COOKIE HANDLING
-# ---------------------------
-cookies_path = "cookies.txt"
-
-if os.getenv("COOKIES_BASE64"):
-    with open(cookies_path, "wb") as f:
-        f.write(base64.b64decode(os.getenv("COOKIES_BASE64")))
-    logging.info("Cookies loaded from environment.")
-else:
-    logging.info("No cookies provided. Public videos only.")
+COOKIES_FILE = "cookies.txt"
 
 
 # ---------------------------
 # DOWNLOAD FUNCTION
 # ---------------------------
 async def download_video(url: str, update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⬇ Download started...\nPlease wait 10–20 seconds.")
+    await update.message.reply_text("Downloading… please wait ⏳")
 
     def run_yt():
         ydl_opts = {
             "format": "bestvideo[height<=720]+bestaudio/best",
             "outtmpl": "video.mp4",
             "merge_output_format": "mp4",
-            "cookies": cookies_path if os.path.exists(cookies_path) else None,
             "ffmpeg_location": "/usr/bin/ffmpeg",
             "retries": 10,
             "fragment_retries": 10,
             "concurrent_fragment_downloads": 5,
         }
+
+        # Use cookies.txt if exists
+        if os.path.exists(COOKIES_FILE):
+            ydl_opts["cookies"] = COOKIES_FILE
+            logging.info("Using cookies.txt for YouTube login.")
+        else:
+            logging.warning("cookies.txt not found — downloading public videos only.")
+
         with YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-    # Run download in background thread to prevent timeout
+    # Run yt-dlp in background thread
     try:
-        await asyncio.wait_for(asyncio.to_thread(run_yt), timeout=120)
+        await asyncio.wait_for(asyncio.to_thread(run_yt), timeout=180)
     except asyncio.TimeoutError:
-        await update.message.reply_text("❌ Timeout occurred. Try again.")
-        return
+        return await update.message.reply_text("❌ Download timeout. Try again.")
     except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
-        return
+        return await update.message.reply_text(f"❌ Error: {e}")
 
-    # Send file
+    # Send video
     try:
         await update.message.reply_video(
             video=open("video.mp4", "rb"),
-            caption="Here is your 720p video 😊"
+            caption="Here is your video 👍"
         )
     except Exception as e:
-        await update.message.reply_text(f"❌ Telegram send error: {e}")
+        await update.message.reply_text(f"❌ Telegram error: {e}")
 
-    # Cleanup
-    if os.path.exists("video.mp4"):
+    # Clean up
+    try:
         os.remove("video.mp4")
+    except:
+        pass
 
 
 # ---------------------------
-# Telegram Bot Handlers
+# COMMAND HANDLERS
 # ---------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Send me a YouTube link and I'll download it in 720p!")
+    await update.message.reply_text(
+        "Send me any YouTube link and I'll download the 720p video for you!"
+    )
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text.strip()
-    if "youtube.com" in url or "youtu.be" in url:
-        await download_video(url, update, context)
+    text = update.message.text.strip()
+
+    if "youtube.com" in text or "youtu.be" in text:
+        await download_video(text, update, context)
     else:
-        await update.message.reply_text("❌ Not a valid YouTube link.")
+        await update.message.reply_text("❌ Please send a valid YouTube link.")
 
 
 # ---------------------------
-# MAIN APPLICATION
+# RUN BOT
 # ---------------------------
 if __name__ == "__main__":
     TOKEN = os.getenv("BOT_TOKEN")
